@@ -4,18 +4,15 @@
  * Soporta reintentos con backoff exponencial.
  */
 const Database = require("better-sqlite3");
-const path = require("path");
 const { v4: uuidv4 } = require("uuid");
-
-const DB_PATH = process.env.QUEUE_DB_PATH || path.join(process.cwd(), "queue.db");
-
-const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || "3");
-const BASE_RETRY_DELAY_MS = parseInt(process.env.BASE_RETRY_DELAY_MS || "1000");
-const WORKER_INTERVAL_MS = parseInt(process.env.WORKER_INTERVAL_MS || "5000");
+const { getConfig } = require("../config");
+const { logger } = require("../logger");
 
 class NotificationQueue {
-  constructor(dbPath = DB_PATH) {
-    this.db = new Database(dbPath);
+  constructor(options = {}) {
+    const config = typeof options === "string" ? getConfig({ dbPath: options }) : getConfig(options);
+    this.config = config;
+    this.db = new Database(config.queueDbPath);
     this.handlers = {};
     this._workerTimer = null;
     this._init();
@@ -29,7 +26,7 @@ class NotificationQueue {
         payload TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
         attempts INTEGER NOT NULL DEFAULT 0,
-        max_retries INTEGER NOT NULL DEFAULT ${MAX_RETRIES},
+        max_retries INTEGER NOT NULL DEFAULT ${this.config.maxRetries},
         next_attempt_at INTEGER NOT NULL DEFAULT 0,
         error TEXT,
         created_at INTEGER NOT NULL,
@@ -42,21 +39,10 @@ class NotificationQueue {
     `);
   }
 
-  /**
-   * Registra un handler para un canal.
-   * @param {string} channel - Nombre del canal (email, telegram, webhook)
-   * @param {Function} handler - async (payload) => void
-   */
   registerHandler(channel, handler) {
     this.handlers[channel] = handler;
   }
 
-  /**
-   * Encola una notificación.
-   * @param {string} channel
-   * @param {object} payload
-   * @returns {string} ID de la notificación
-   */
   enqueue(channel, payload) {
     const id = uuidv4();
     const now = Date.now();
@@ -64,13 +50,10 @@ class NotificationQueue {
       INSERT INTO notifications (id, channel, payload, status, attempts, max_retries, next_attempt_at, created_at, updated_at)
       VALUES (?, ?, ?, 'pending', 0, ?, 0, ?, ?)
     `);
-    stmt.run(id, channel, JSON.stringify(payload), MAX_RETRIES, now, now);
+    stmt.run(id, channel, JSON.stringify(payload), this.config.maxRetries, now, now);
     return id;
   }
 
-  /**
-   * Obtiene el estado de una notificación por ID.
-   */
   getStatus(id) {
     const row = this.db.prepare("SELECT * FROM notifications WHERE id = ?").get(id);
     if (!row) return null;
@@ -80,39 +63,52 @@ class NotificationQueue {
     };
   }
 
-  /**
-   * Lista notificaciones con filtros opcionales.
-   */
-  list({ status, channel, limit = 50 } = {}) {
+  list({ status, channel, limit = 50, offset = 0 } = {}) {
     let query = "SELECT * FROM notifications WHERE 1=1";
     const params = [];
-    if (status) { query += " AND status = ?"; params.push(status); }
-    if (channel) { query += " AND channel = ?"; params.push(channel); }
-    query += " ORDER BY created_at DESC LIMIT ?";
-    params.push(limit);
+
+    if (status) {
+      query += " AND status = ?";
+      params.push(status);
+    }
+
+    if (channel) {
+      query += " AND channel = ?";
+      params.push(channel);
+    }
+
+    query += " ORDER BY created_at DESC LIMIT ? OFFSET ?";
+    params.push(limit, offset);
 
     const rows = this.db.prepare(query).all(...params);
-    return rows.map(r => ({ ...r, payload: JSON.parse(r.payload) }));
+    return rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) }));
   }
 
-  /**
-   * Estadísticas de la cola.
-   */
   stats() {
     const rows = this.db.prepare(
       "SELECT status, COUNT(*) as count FROM notifications GROUP BY status"
     ).all();
-    const result = { pending: 0, processing: 0, sent: 0, failed: 0, total: 0 };
+    const retryScheduled = this.db.prepare(
+      "SELECT COUNT(*) AS count FROM notifications WHERE attempts > 0 AND status = 'pending'"
+    ).get().count;
+
+    const result = {
+      pending: 0,
+      processing: 0,
+      sent: 0,
+      failed: 0,
+      retryScheduled,
+      total: 0,
+    };
+
     for (const row of rows) {
       result[row.status] = row.count;
       result.total += row.count;
     }
+
     return result;
   }
 
-  /**
-   * Procesa una notificación pendiente.
-   */
   async _processOne(row) {
     const handler = this.handlers[row.channel];
     if (!handler) {
@@ -120,7 +116,6 @@ class NotificationQueue {
       return;
     }
 
-    // Marcar como procesando
     this.db.prepare("UPDATE notifications SET status = 'processing', updated_at = ? WHERE id = ?")
       .run(Date.now(), row.id);
 
@@ -133,8 +128,7 @@ class NotificationQueue {
       if (attempts >= row.max_retries) {
         this._markFailed(row.id, err.message);
       } else {
-        // Backoff exponencial: 1s, 2s, 4s, 8s...
-        const delay = BASE_RETRY_DELAY_MS * Math.pow(2, attempts - 1);
+        const delay = this.config.baseRetryDelayMs * Math.pow(2, attempts - 1);
         this.db.prepare(`
           UPDATE notifications
           SET status = 'pending', attempts = ?, next_attempt_at = ?, error = ?, updated_at = ?
@@ -150,9 +144,6 @@ class NotificationQueue {
     ).run(error, Date.now(), id);
   }
 
-  /**
-   * Worker: procesa notificaciones pendientes listas para ejecutarse.
-   */
   async tick() {
     const now = Date.now();
     const pending = this.db.prepare(`
@@ -167,25 +158,21 @@ class NotificationQueue {
     }
   }
 
-  /**
-   * Inicia el worker en background.
-   */
   startWorker() {
     if (this._workerTimer) return;
     this._workerTimer = setInterval(async () => {
       try {
         await this.tick();
       } catch (err) {
-        console.error("[queue] Error en worker:", err);
+        logger.error("queue worker failed", { error: err.message });
       }
-    }, WORKER_INTERVAL_MS);
-    // Ejecutar inmediatamente también
-    this.tick().catch(console.error);
+    }, this.config.workerIntervalMs);
+
+    this.tick().catch((err) => {
+      logger.error("queue initial tick failed", { error: err.message });
+    });
   }
 
-  /**
-   * Detiene el worker.
-   */
   stopWorker() {
     if (this._workerTimer) {
       clearInterval(this._workerTimer);
@@ -193,9 +180,6 @@ class NotificationQueue {
     }
   }
 
-  /**
-   * Cierra la conexión a la BD.
-   */
   close() {
     this.stopWorker();
     this.db.close();

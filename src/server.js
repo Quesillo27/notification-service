@@ -1,22 +1,24 @@
 "use strict";
 require("dotenv").config({ path: ".env" });
 
+const { getConfig } = require("./config");
+const { logger } = require("./logger");
 const { createApp } = require("./app");
 
-const PORT = parseInt(process.env.PORT || "3000");
-
+const config = getConfig();
 const { app, queue } = createApp();
 
-// Iniciar worker de cola
 queue.startWorker();
 
-const server = app.listen(PORT, () => {
-  console.log(`[server] Notification Service corriendo en puerto ${PORT}`);
-  console.log(`[server] Canales disponibles: telegram, email, webhook`);
+const server = app.listen(config.port, () => {
+  logger.info("server started", {
+    port: config.port,
+    channels: ["telegram", "email", "webhook"],
+  });
 });
 
 process.on("SIGTERM", () => {
-  console.log("[server] SIGTERM recibido, cerrando...");
+  logger.info("sigterm received, shutting down");
   queue.stopWorker();
   server.close(() => process.exit(0));
 });

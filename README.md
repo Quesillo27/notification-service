@@ -1,108 +1,125 @@
 # notification-service
 
-![Node.js](https://img.shields.io/badge/node-20+-green) ![Express](https://img.shields.io/badge/express-4.x-blue) ![SQLite](https://img.shields.io/badge/sqlite-cola-blue) ![Licencia](https://img.shields.io/badge/licencia-MIT-green)
+![CI](https://github.com/Quesillo27/notification-service/actions/workflows/ci.yml/badge.svg)
+![Node.js](https://img.shields.io/badge/node-20+-green)
+![Licencia](https://img.shields.io/badge/licencia-MIT-green)
 
-Servicio unificado de notificaciones que soporta Telegram, Email (SMTP) y Webhooks con cola persistente SQLite, reintentos con backoff exponencial y envío bulk.
+Servicio unificado de notificaciones con cola SQLite persistente para Telegram, Email SMTP y Webhooks. Expone una API REST con retries exponenciales, respuestas uniformes, paginacion y endurecimiento HTTP para uso real en produccion.
 
 ## Instalacion en 3 comandos
 
 ```bash
 git clone https://github.com/Quesillo27/notification-service
 cd notification-service
-npm install
+./setup.sh
 ```
 
-## Uso
+## Uso rapido
 
 ```bash
-cp .env.example .env
-# Configurar TELEGRAM_BOT_TOKEN y/o SMTP_HOST
 npm start
 ```
 
-## Ejemplo
+## Ejemplos reales
 
 ```bash
-# Enviar notificacion Telegram (asíncrono)
+# Encolar una notificacion Telegram
 curl -X POST http://localhost:3000/notify \
   -H "Content-Type: application/json" \
-  -d '{"channel":"telegram","payload":{"chat_id":"123456","text":"Hola!"}}'
-# → {"id":"abc-uuid","status":"queued","channel":"telegram"}
+  -d '{"channel":"telegram","payload":{"chat_id":"123456","text":"Hola"}}'
 
-# Verificar estado
-curl http://localhost:3000/notify/abc-uuid
-# → {"id":"abc-uuid","status":"sent",...}
+# Respuesta esperada
+# {"success":true,"message":"Notificacion encolada","data":{"id":"...","status":"queued","channel":"telegram"},"error":null}
 
-# Envío síncrono (espera respuesta del canal)
+# Envio sincronico a webhook
 curl -X POST http://localhost:3000/notify \
   -H "Content-Type: application/json" \
-  -d '{"channel":"telegram","payload":{...},"async":false}'
+  -d '{"channel":"webhook","async":false,"payload":{"url":"https://example.com/hook","body":{"event":"payment.created"}}}'
 
-# Estadísticas de la cola
-curl http://localhost:3000/stats
-# → {"pending":0,"processing":0,"sent":5,"failed":0,"total":5}
+# Listado paginado
+curl "http://localhost:3000/notifications?channel=telegram&limit=10&offset=0"
+
+# Salud y metricas
+curl http://localhost:3000/health
+curl http://localhost:3000/metrics
 ```
-
-## API / Endpoints
-
-| Metodo | Ruta | Descripcion |
-|---|---|---|
-| GET | `/health` | Health check con stats de la cola |
-| POST | `/notify` | Enviar notificacion (async=true por defecto) |
-| POST | `/notify/bulk` | Enviar hasta 100 notificaciones en batch |
-| GET | `/notify/:id` | Estado de una notificacion |
-| GET | `/notifications` | Listar notificaciones (filtros: status, channel) |
-| GET | `/stats` | Estadisticas de la cola |
-
-## Canales
-
-### Telegram
-```json
-{ "channel": "telegram", "payload": { "chat_id": "123456", "text": "Mensaje" } }
-```
-
-### Email
-```json
-{ "channel": "email", "payload": { "to": "user@example.com", "subject": "Asunto", "text": "Cuerpo", "html": "<b>Opcional</b>" } }
-```
-
-### Webhook
-```json
-{ "channel": "webhook", "payload": { "url": "https://example.com/hook", "body": { "event": "test" } } }
-```
-
-## Cola
-
-- Persistencia: SQLite (configurable via `QUEUE_DB_PATH`)
-- Reintentos: backoff exponencial (1s, 2s, 4s...) hasta `MAX_RETRIES` intentos
-- Worker: corre cada `WORKER_INTERVAL_MS` ms procesando notificaciones pendientes
 
 ## Variables de entorno
 
-| Variable | Default | Descripcion |
-|---|---|---|
-| `PORT` | 3000 | Puerto del servidor |
-| `TELEGRAM_BOT_TOKEN` | — | Token para canal Telegram |
-| `SMTP_HOST` | — | Host SMTP para canal email |
-| `SMTP_PORT` | 587 | Puerto SMTP |
-| `SMTP_USER` | — | Usuario SMTP |
-| `SMTP_PASS` | — | Password SMTP |
-| `QUEUE_DB_PATH` | ./queue.db | Ruta base de datos SQLite de la cola |
-| `MAX_RETRIES` | 3 | Intentos maximos por notificacion |
-| `BASE_RETRY_DELAY_MS` | 1000 | Delay base para backoff exponencial |
-| `WORKER_INTERVAL_MS` | 5000 | Intervalo del worker en ms |
+| Variable | Descripcion | Default | Obligatoria |
+|---|---|---|---|
+| `PORT` | Puerto HTTP del servicio | `3000` | No |
+| `RATE_LIMIT_MAX` | Maximo de requests por ventana | `100` | No |
+| `RATE_LIMIT_WINDOW_MS` | Ventana del rate limit en ms | `60000` | No |
+| `CORS_ALLOWED_ORIGINS` | Lista CSV de origins permitidos | vacio | No |
+| `ALLOW_PRIVATE_WEBHOOK_HOSTS` | Permite webhooks a hosts privados/locales | `false` | No |
+| `QUEUE_DB_PATH` | Ruta SQLite de la cola | `./queue.db` | No |
+| `MAX_RETRIES` | Reintentos maximos por notificacion | `3` | No |
+| `BASE_RETRY_DELAY_MS` | Delay base del backoff exponencial | `1000` | No |
+| `WORKER_INTERVAL_MS` | Frecuencia del worker en ms | `5000` | No |
+| `TELEGRAM_BOT_TOKEN` | Token Bot API para Telegram | - | Solo si usas Telegram |
+| `SMTP_HOST` | Host SMTP | - | Solo si usas Email |
+| `SMTP_PORT` | Puerto SMTP | `587` | No |
+| `SMTP_USER` | Usuario SMTP | - | No |
+| `SMTP_PASS` | Password SMTP | - | No |
+| `SMTP_FROM` | Remitente por defecto | `notificaciones@<SMTP_HOST>` | No |
 
-## Deploy con Docker
+## API
+
+### `GET /health`
+- Estado del servicio, version, uptime y resumen de cola.
+
+### `GET /metrics`
+- Uptime, uso de memoria y metricas de cola.
+
+### `POST /notify`
+- Encola o envia una notificacion.
+- Body:
+
+```json
+{
+  "channel": "telegram",
+  "async": true,
+  "payload": {
+    "chat_id": "123456",
+    "text": "Hola"
+  }
+}
+```
+
+### `POST /notify/bulk`
+- Encola hasta 100 notificaciones y reporta errores por item.
+
+### `GET /notify/:id`
+- Consulta el estado de una notificacion.
+
+### `GET /notifications`
+- Filtros: `status`, `channel`, `limit`, `offset`.
+
+### `GET /stats`
+- Conteos agregados de la cola, incluyendo `retryScheduled`.
+
+## Docker
 
 ```bash
 docker build -t notification-service .
-docker run -d -p 3000:3000 \
+docker run --rm -p 3000:3000 \
   -e TELEGRAM_BOT_TOKEN=xxx \
-  -e SMTP_HOST=smtp.gmail.com \
+  -e SMTP_HOST=smtp.example.com \
   -v $(pwd)/data:/app/data \
   notification-service
 ```
 
-## Contribuir
+## Comandos utiles
 
-PRs bienvenidos. Corre `npm test` antes de enviar.
+```bash
+make test
+make docker
+make dev
+```
+
+## Roadmap
+
+- Persistencia de metricas historicas para latencia y throughput.
+- Workers paralelos coordinados para mayor volumen de entrega.
+- Autenticacion por API key para exponer el servicio de forma publica.

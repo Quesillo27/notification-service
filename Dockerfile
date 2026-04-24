@@ -1,20 +1,25 @@
-FROM node:20-slim
+FROM node:20-slim AS deps
 
 WORKDIR /app
-
-RUN useradd -m -u 1000 appuser && mkdir -p /app/data && chown appuser /app/data
-
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
+FROM node:20-slim AS runtime
+
+WORKDIR /app
+RUN mkdir -p /app/data && chown -R node:node /app
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY package*.json ./
 COPY src/ ./src/
 
 VOLUME ["/app/data"]
 
-USER appuser
+USER node
 
 EXPOSE 3000
 
+ENV NODE_ENV=production
 ENV QUEUE_DB_PATH=/app/data/queue.db
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
