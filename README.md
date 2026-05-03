@@ -95,6 +95,7 @@ curl http://localhost:3000/metrics
 
 ### `GET /notifications`
 - Filtros: `status`, `channel`, `limit`, `offset`.
+- `async` en `POST /notify` debe ser booleano y los filtros `status`/`channel` invalidos responden `400`.
 
 ### `GET /stats`
 - Conteos agregados de la cola, incluyendo `retryScheduled`.

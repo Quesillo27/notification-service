@@ -4,6 +4,7 @@ const { sendSuccess, sendError } = require("../utils/responses");
 
 const router = express.Router();
 const VALID_CHANNELS = ["telegram", "email", "webhook"];
+const VALID_STATUSES = ["pending", "processing", "sent", "failed"];
 
 function getQueue(req) {
   return req.app.locals.queue;
@@ -21,6 +22,13 @@ router.post("/notify", async (req, res) => {
 
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return sendError(res, { statusCode: 400, message: "payload debe ser un objeto" });
+  }
+
+  if (typeof isAsync !== "boolean") {
+    return sendError(res, {
+      statusCode: 400,
+      message: "async debe ser booleano",
+    });
   }
 
   const queue = getQueue(req);
@@ -108,6 +116,20 @@ router.get("/notifications", (req, res) => {
 
   if (Number.isNaN(parsedOffset) || parsedOffset < 0) {
     return sendError(res, { statusCode: 400, message: "offset debe ser mayor o igual a 0" });
+  }
+
+  if (status && !VALID_STATUSES.includes(status)) {
+    return sendError(res, {
+      statusCode: 400,
+      message: `status invalido. Validos: ${VALID_STATUSES.join(", ")}`,
+    });
+  }
+
+  if (channel && !VALID_CHANNELS.includes(channel)) {
+    return sendError(res, {
+      statusCode: 400,
+      message: `channel invalido. Validos: ${VALID_CHANNELS.join(", ")}`,
+    });
   }
 
   const notifications = queue.list({

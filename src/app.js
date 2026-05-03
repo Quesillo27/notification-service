@@ -81,6 +81,14 @@ function createApp(options = {}) {
   });
 
   app.use((err, req, res, next) => {
+    if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
+      return sendError(res, {
+        statusCode: 400,
+        message: "JSON malformado",
+        details: "INVALID_JSON",
+      });
+    }
+
     logger.error("request failed", {
       error: err.message,
       method: req.method,

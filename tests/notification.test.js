@@ -86,6 +86,16 @@ describe("POST /notify (async)", () => {
     expect(res.body.success).toBe(false);
     expect(res.body.message).toBe("payload debe ser un objeto");
   });
+
+  test("rechaza async cuando no es booleano", async () => {
+    const res = await request(app)
+      .post("/notify")
+      .send({ channel: "telegram", payload: { chat_id: "123", text: "test" }, async: "false" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.message).toBe("async debe ser booleano");
+  });
 });
 
 describe("POST /notify (sync)", () => {
@@ -172,6 +182,20 @@ describe("GET /notifications", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.message).toContain("offset");
+  });
+
+  test("rechaza status invalido", async () => {
+    const res = await request(app).get("/notifications?status=done");
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain("status invalido");
+  });
+
+  test("rechaza channel invalido como filtro", async () => {
+    const res = await request(app).get("/notifications?channel=sms");
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain("channel invalido");
   });
 });
 
@@ -269,5 +293,17 @@ describe("404", () => {
     expect(res.status).toBe(404);
     expect(res.body.success).toBe(false);
     expect(res.body.message).toBe("Ruta no encontrada");
+  });
+
+  test("json malformado retorna 400 uniforme", async () => {
+    const res = await request(app)
+      .post("/notify")
+      .set("Content-Type", "application/json")
+      .send('{"channel":"telegram",');
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.message).toBe("JSON malformado");
+    expect(res.body.error).toBe("INVALID_JSON");
   });
 });

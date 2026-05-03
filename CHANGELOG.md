@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-05-03
+
+### Fixed
+- `POST /notify` ahora responde `400` uniforme cuando recibe JSON malformado en lugar de escalar a `500`.
+- `POST /notify` valida `async` como booleano para evitar envios asincronos accidentales por coercion de tipos.
+- `GET /notifications` valida filtros `status` y `channel` antes de consultar la cola.
+
 ## [1.1.0] - 2026-04-24
 
 ### Added
